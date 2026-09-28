@@ -1,0 +1,22 @@
+# Local development reference only — not part of the published skill
+INSTRUCTIONS.md
+
+# Session tooling artifacts
+.zcode/
+
+# Scratch directories from research runs and phase testing
+scratch/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local test outputs (the shipped sample .docx in examples/ is intentional)
+test_output*.docx
+
+# Virtual environments
+.venv/
+
+# OS junk
+.DS_Store
+Thumbs.db
