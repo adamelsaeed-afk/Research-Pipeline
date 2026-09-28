@@ -56,7 +56,7 @@ run in a completely separate agent session.
 Install with the Skills CLI:
 
 ```bash
-npx skills add amElnagdy/research-pipeline
+npx skills add adamelsaeed-afk/Research-Pipeline
 ```
 
 Or install manually: clone this repository and copy it into your agent CLI's skills
