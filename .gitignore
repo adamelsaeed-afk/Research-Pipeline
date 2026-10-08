@@ -1,11 +1,12 @@
 # Local development reference only — not part of the published skill
 INSTRUCTIONS.md
 
-# Session tooling artifacts
-.zcode/
+
 
 # Scratch directories from research runs and phase testing
 scratch/
+/scratch z/
+/test_reports/
 
 # Python bytecode
 __pycache__/

@@ -1,261 +1,129 @@
 ---
 name: research-pipeline
 description: >-
-  Structured multi-agent research skill supporting technical and market research.
-  Use when the user asks to research a topic or technology, compare tools, vendors,
-  or products, run a competitive analysis, gap analysis, or feature research, or
-  estimate market size (TAM). Guides agents through intake, search planning,
-  multi-phase validation, and report compilation with frequency-backed feature
-  analysis. Exports to Word.
+  Interview the user to define a research brief, then conduct sourced technical or
+  market research, validate findings, and produce a publication-ready descriptive
+  report. Use for comparisons, competitive or feature research, gap analysis, and
+  market sizing when the user wants a structured research process.
 ---
 
 # Research Pipeline
 
-A structured, multi-agent research pipeline that takes a request from intake through
-validation to a publication-ready report. It supports two modes:
+The agent that receives this skill conducts the research and writes the report. It may
+validate in the same session or, when the user selects delegation, use fresh external
+`agy`, `opencode`, or `codex` CLI processes for validation and gap filling. A native
+subagent is not an external CLI process.
 
-- **Technical research** — evaluating tools, frameworks, Application Programming
-  Interfaces (APIs), architectures, and developer ecosystems.
-- **Market research** — analyzing products, competitors, features, and positioning,
-  in four sub-types: Gap Analysis, Competitive Analysis, Feature Research, and
-  market sizing (Total Addressable Market, TAM).
+## 1. Interview and confirm the research brief
 
-Three agent roles cooperate through the pipeline:
+Treat the user's request and earlier answers as the first interview round. Ask small
+groups of questions, follow each answer into any newly relevant branch, and revisit
+ambiguous or conflicting answers. Read the [intake guide](references/intake.md)
+during the interview to derive task-specific branches and record their resolution.
+Ask only questions that can change the research.
+For named-deployment samples, settle whether testimonial-grade evidence qualifies
+before screening candidates; record and disclose the chosen threshold.
 
-- **Research Agent** (orchestrator) — searches, gathers, and cites findings.
-- **Validator** — checks accuracy, recency, links, and source quality; flags gaps.
-- **Gap-Filler** — resolves the gaps the Validator identifies.
+Keep `scratch/intake.json` with each applicable decision in `pending`, `unclear`,
+`answered`, or `not_applicable`. Record an explicit reason for `not_applicable`; an
+optional answer of “none” is an answer. Never resolve a question from silence, a
+timeout, or an offered default. If asked to decide, propose a specific answer and ask
+the user to confirm it. Keep asking until all relevant branches have clear answers.
 
-Activation is driven by the YAML `description` above. The intended trigger phrases,
-kept here as documentation, include: "Research X", "Do a competitive analysis of...",
-"What features do competitors offer for...", "Analyze the market for...", "Compare
-X vs Y vs Z", "Do a gap analysis for...", "Feature research for...".
+Show the complete `scratch/research_brief.md` to the user and obtain explicit
+confirmation. A correction reopens affected decisions. Record confirmation against
+the exact brief bytes as described in the intake guide. Run:
 
-These instructions are Command-Line Interface (CLI) agnostic: they use no
-CLI-specific features, and delegation is described as a workflow pattern, not tied
-to any implementation.
+```text
+python scripts/check_intake.py --record scratch/intake.json --brief scratch/research_brief.md
+```
 
-## Step 0 — Activation Confirmation
+The check must pass before drafting a search plan, browsing, delegating, or writing a
+report. It checks recorded completeness and confirmation; the agent remains
+responsible for semantic clarity. An instruction-only skill cannot technically
+intercept unrelated tools in every host runtime.
 
-When a trigger phrase matches, ask the user FIRST:
+If the confirmed brief selects external CLI validation, read
+[delegation.md](references/delegation.md) now. Complete its routing preflight and
+harmless source-access probes for the selected targets before drafting the search
+plan. If a prerequisite fails, report it and obtain the user's choice before research.
 
-> "This looks like a research task. Do you want me to run the structured research
-> pipeline (intake, validation, formal report), or should I just answer directly?"
+## 2. Plan and conduct the research
 
-- **Decline** → answer normally, without this skill. No intake, no pipeline, no
-  scratch files.
-- **Accept** → begin the intake questions below.
+From the confirmed brief, write `scratch/search_plan.md` with search questions,
+priority sources, and coverage strategy. Obtain the user's separate approval of the
+plan before searching. The originating agent then searches, gathers evidence, and
+writes `scratch/raw_findings.md`. Give each material claim a stable ID, exact claim,
+source URL or document locator, source date where known, and retrieval date. Keep
+search reasoning out of the findings file.
 
-The pipeline is all-or-nothing — there is no separate fast mode inside the skill.
-Simple or casual questions are handled by declining at this gate.
+For feature comparisons, define the comparison population and each feature before
+counting. Count documented capability coverage, not market adoption. A feature called
+“standard” needs its numerator, denominator, and threshold. Default bands are
+universal at 70% or more, emerging at 30–69%, and differentiating below 30%; confirm
+any changed thresholds in the brief. Keep model-driven AI distinct from rules,
+ordinary search, optical character recognition, and analytics. Normalize pricing
+only when units genuinely match; retain qualifiers and source dates.
 
-## Intake (10 Questions)
+## 3. Validate and fill gaps
 
-Ask all questions BEFORE starting any research, one at a time or in small logical
-groups. Save the answers to `scratch/intake.md`.
+Read [validation_protocol.md](references/validation_protocol.md) at this phase. The
+confirmed brief chooses `same_session` or `external_cli` validation.
 
-1. **Research Type**: "Is this technical research or market/business research?"
-   - If market → ask question 2. If technical → skip to question 3.
-2. **Market Sub-Type**: "What kind of market research is this?" — Gap Analysis,
-   Competitive Analysis, Feature Research, or Market Sizing / TAM Estimation.
-   Briefly explain what each sub-type encompasses.
-3. **Targets**: "What specific companies, products, technologies, or topics should
-   I research?" The user provides the list of entities to analyze.
-4. **Geographic Scope**: "Should this research be global, or focused on specific
-   regions/countries?"
-5. **Time Scope**: "How recent should sources be? (e.g., last 6 months, 1 year,
-   2 years)"
-6. **Depth & Involvement**: "Do you want a surface-level overview or a deep dive?"
-   Also confirm review granularity for validation checkpoints: (a) review after
-   every validation phase (default), (b) review at major checkpoints only, or
-   (c) review the final report only.
-7. **Report Template**: "Which report structure do you prefer?" Show the full
-   structure of each option when asking, not just the names:
-   - **Comprehensive**: Executive Summary → Methodology → Market Standards (with
-     frequency data) → Category-Specific Standards (optional) → Differentiating
-     Features → Feature-by-Feature Deep Dive → Entity Coverage Matrix → Pricing
-     Comparison → Gaps & Opportunities → References
-   - **Simple**: Executive Summary → Findings → Conclusion → Sources
-   - **Custom**: "Describe the structure you want"
-8. **Specific Questions**: "Are there specific questions you want this research to
-   answer?"
-9. **Known Sources**: "Do you have any starting points — URLs, documents, or leads
-   I should begin with?"
-10. **Validation Mechanism**: "How should validation run?"
-    - **In-session isolation** (default): you validate your own findings via strict
-      role-isolated passes — reading ONLY the findings file and source URLs, none
-      of your own search reasoning. No extra setup required.
-    - **Delegate fresh-session**: validation runs in separate agent sessions via
-      the user's installed delegate-skills adapters. Prerequisites: delegate-skills
-      installed, a second agent CLI **with web access**, Node 18+, and git. Explain
-      these prerequisites. If the user chooses this option but a prerequisite is
-      missing, say exactly what is missing and offer in-session isolation instead.
-      Never silently downgrade.
+- **Same session:** assess the findings and their sources in a separate pass. Use the
+  findings file rather than search notes. This is a review discipline, not independent
+  execution.
+- **External CLI:** read [delegation.md](references/delegation.md), use the project
+  dispatcher, and run the selected validator and gap filler as fresh external CLI
+  processes. Research stays with this agent. Never silently substitute a native
+  subagent or another transport if a configured CLI cannot run; report the exact
+  prerequisite and wait for the user's choice.
 
-## Pipeline (Phases A–G)
+The validator records supported claims and specific gaps. The gap filler addresses
+those gaps with cited corrections. Invoke the validator again in a new session after
+each material correction. Continue while a pass adds material evidence. When an issue
+stalls because evidence is inaccessible or contradictory, record the precise
+uncertainty and ask the user only if the research scope or intended treatment needs a
+decision. Do not mark an unsupported claim verified or stop at an arbitrary pass
+count.
 
-| Phase | What happens | Human checkpoint |
-|---|---|---|
-| **A — Research Plan** | Build a search plan (keywords, sources, strategy) from the intake answers; write `scratch/search_plan.md` | User approves the plan before any searching begins |
-| **B — Research Execution** | Execute the approved plan against priority sources for the mode; document every finding with its source Uniform Resource Locator (URL); write `scratch/raw_findings.md` (findings + URLs only — no search narrative or justifications) | — |
-| **C — Validation** | Run the 5 validation phases (summary below) | Review points per intake granularity (Q6) |
-| **D — Gap Filling** | Validator ⇄ Gap-Filler loop, capped at 3 iterations | User reviews the complete, validated findings |
-| **E — Report Compilation** | Compile findings into the chosen template, applying all Content Rules; write `scratch/draft_report.md` | — |
-| **F — Report Review** | Validator reviews the compiled report | User reviews and approves the final report |
-| **G — Export** | Word export, only after explicit approval | User explicitly approves the export |
+## 4. Write and review the report
 
-### Validation Isolation (chosen at intake, Q10)
+Use the selected [comprehensive](templates/comprehensive.md),
+[simple](templates/simple.md), or user-defined structure. Read the
+[English report voice guide](references/report_voice.md). Include only research
+findings, material limitations, and citations in the delivered report. State entities,
+geography, and as-of date in the executive summary or a short scope line. Put
+calculation bases and material assumptions beside estimates. A report of any research
+type remains descriptive: it contains no recommendations, proposed actions,
+opportunities, or next steps.
 
-- **In-session isolation**: switch roles strictly. As the Validator, read ONLY
-  `scratch/raw_findings.md` and the source URLs it cites — never your own search
-  notes or reasoning from earlier in the session. Write `scratch/validation_log.md`
-  and `scratch/gap_report.md`. As the Gap-Filler, read ONLY the gap report.
-- **Delegate fresh-session**: dispatch validation to a fresh session via the user's
-  delegate-skills adapter. Briefs must be self-contained with absolute file paths:
-  what to validate, the absolute path to `raw_findings.md`, and the absolute paths
-  where `validation_log.md` and `gap_report.md` must be written. The fresh session
-  receives only the findings file plus source URLs — no search history, no
-  reasoning traces, no prior context.
+Adapt the comprehensive structure to the confirmed brief without describing the
+adaptation in the report. Feature comparisons use documented coverage and a matrix.
+Market sizing uses market size, segments, calculation bases, and limits. A technical
+deep dive follows the technical questions; a tool comparison uses a matrix only when
+the brief defines common dimensions. Omit pricing or category sections when outside
+the agreed scope.
 
-### Phase C — The 5 Validation Phases (summary)
+Check every material claim against the findings and cited source, every matrix total
+against its cells, every number against its unit and date, and every substantive
+uncertainty against its evidence. Remove template comments, placeholders, process
+notes, agent and skill references, scratch paths, and validation details. Apply the
+same check after editing for style. Present the finished Markdown report for the
+user's review.
 
-1. **Link Accessibility** — every cited URL must resolve. A 403/429 response is
-   usually bot protection, not a dead link: try fetching the content directly; if
-   it still cannot be verified, flag it as "could not verify automatically". With
-   30+ links, process in batches of 5.
-2. **Content Accuracy** — visit each cited source and confirm the claim actually
-   appears there. Process in batches and verify high-stakes claims first: pricing
-   figures, adoption counts, standards classifications.
-3. **Recency** — check sources against the user's time scope. Recency applies to
-   volatile facts (pricing, market data, releases); stable evergreen references
-   are exempt unless the user's scope says otherwise.
-4. **Cross-Reference & Completeness** — every factual claim needs at least one
-   supporting source; verify against 2+ independent sources where possible;
-   identify coverage gaps.
-5. **Source Quality** — prefer primary sources (official sites, documentation)
-   over secondary reporting; flag findings backed only by blogs or forums.
+## 5. Export and continue
 
-After each phase, offer a review point according to the intake granularity.
-**Read `references/validation_protocol.md` when Phase C begins** — it contains the
-full procedures, the validation log and gap report formats, and the report-review
-checklist.
+After approval of the report and Word style, export when requested:
 
-### Gap Filling (Phase D)
-
-1. The Validator produces `scratch/gap_report.md` listing all issues found.
-2. The Gap-Filler addresses each gap (replacement sources, corrections, missing
-   data), reading ONLY the gap report, and writes `scratch/gap_fills.md`.
-3. The Validator re-validates the additions.
-4. Loop until the Validator approves all findings — **maximum 3 iterations**. If
-   gaps remain after 3 iterations, stop and escalate to the user with the list of
-   unresolved gaps instead of looping indefinitely.
-
-## Report Content Rules
-
-These rules apply to ALL output — the research report, any sample output, and the
-README.
-
-1. **No vendor/marketing language.** Never copy marketing copy from vendor
-   websites; describe what each feature actually does, neutrally and in a
-   standardized way.
-   - Bad: "frontier-class legal AI models fine-tuned specifically for top-tier law firms"
-   - Good: "Legal-domain fine-tuned language models for document analysis and drafting"
-2. **Frequency-backed standards.** Every feature classified as a "standard" must
-   include adoption frequency data across the analyzed entities:
-   | Classification | Threshold |
-   |---|---|
-   | Universal Standard | 70%+ of analyzed entities |
-   | Emerging Standard | 30–69% of analyzed entities |
-   | Differentiator | <30% of analyzed entities |
-   State counts explicitly, e.g. "Document RAG: 7/7 vendors (100%)". The user may
-   override these thresholds at intake — if they do, use their values.
-3. **Feature-first organization** (comprehensive template): organize the report
-   around features, not vendors. Each feature section describes what the feature
-   does (neutrally), then which entities offer it and how implementations vary.
-   The Entity Coverage Matrix provides the at-a-glance vendor view.
-4. **Structured pricing.** Present pricing in tables for side-by-side comparison,
-   normalized to the same unit (e.g., per user/month), and note when pricing is a
-   "custom/enterprise quote" vs. publicly listed.
-5. **Category-specific standards (optional).** If the research spans multiple
-   product categories, ask at intake whether a category breakdown is needed.
-6. **Abbreviations.** Expand every abbreviation on first use as
-   `Full Name (ABBREVIATION)`, then the abbreviation alone may be used — e.g.,
-   "Natural Language Processing (NLP)".
-
-## Report Templates
-
-- `templates/comprehensive.md` — the full feature-analysis structure. Follow the
-  adaptation guidance at the top of that file for the selected mode/sub-type
-  (e.g., TAM estimations skip the vendor matrix and add sizing/segmentation
-  sections; technical deep-dives skip vendor-dimension sections).
-- `templates/simple.md` — Executive Summary, Findings, Conclusion, Sources.
-- **Custom** — build to the user's described structure while applying all Content
-  Rules.
-
-The Methodology section always states which template adaptations were applied and
-why.
-
-## Word Export
-
-Only after the user explicitly approves the final report (Phase G), and after the
-user selects a Word template:
-
-```bash
+```text
 uv run scripts/export_to_word.py --input report.md --output report.docx --template corporate
 ```
 
-- Word templates: `corporate`, `academic`, `minimal`.
-- The first run may pause briefly while `uv` installs the script's dependencies
-  automatically.
-- After export, clean up the scratch directory (see File Management).
+Styles are `corporate`, `academic`, and `minimal`. Inspect the exported document for
+visible placeholders, comments, and broken tables. Keep the final Markdown and Word
+files in the user-chosen location. Retain scratch material until the user no longer
+needs it; do not delete evidence automatically.
 
-## Error Handling
-
-**Search errors** — if a search returns no relevant results, try alternative
-keywords (rephrase, broaden, synonyms). After 3 failed attempts, escalate to the
-user with what was tried.
-
-**Source errors** — paywalled source → note it as "[Paywalled source]" and move
-on; a source returns 404/error → flag it for the Gap-Filler to find an
-alternative; sources contradict each other → flag the contradiction for human
-review.
-
-**Agent errors** — stuck or looping → escalate to the user with context of what
-went wrong; validation batching fails mid-batch → save progress, report what was
-validated, continue from where it stopped.
-
-## Research Continuation Mode
-
-After the report is approved and exported, the user may request refinements.
-Re-run only the relevant pipeline phases, not the full pipeline:
-
-- "Dig deeper into section X" → re-run the pipeline for just that section
-- "Add more competitors/entities" → research and validate the new entities, update
-  the report
-- "Expand the pricing analysis" → focused research on pricing only
-- "Update with newer data" → re-validate recency, search for more recent sources
-
-Load the existing approved report, identify which sections need updating, run only
-the relevant phases, validate only the new or changed content, present the updated
-report for approval, and re-export to Word if approved.
-
-## File Management
-
-All intermediate work products go to a **scratch directory**, created fresh at the
-start of each research run. Default location: `./scratch/` under the current
-working directory, unless the user specifies another location.
-
-```
-./scratch/
-├── intake.md          # User's intake responses
-├── search_plan.md     # Approved search plan
-├── raw_findings.md    # Raw research findings
-├── validation_log.md  # Validator's phase-by-phase report
-├── gap_report.md      # Gaps identified by Validator
-├── gap_fills.md       # Gap-Filler's additions
-└── draft_report.md    # Pre-approval draft
-```
-
-After final approval and export, the scratch directory is **deleted**. Only the
-final Markdown (`.md`) report and Word (`.docx`) document remain, written to the
-working directory or a user-specified location.
+For later refinements, reopen only affected research questions, confirm any changed
+brief decisions, validate changed findings, and revise the report accordingly.
