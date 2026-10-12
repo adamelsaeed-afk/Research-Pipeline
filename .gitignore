@@ -1,6 +1,12 @@
 # Local development reference only — not part of the published skill
 INSTRUCTIONS.md
 
+# Local environment files; examples must contain placeholders only
+.env
+.env.*
+!.env.example
+!.env.template
+
 
 
 # Scratch directories from research runs and phase testing
