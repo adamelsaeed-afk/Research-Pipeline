@@ -35,14 +35,21 @@ and constraints, and asks only about unresolved choices that affect the research
 Questions about the subjects' capabilities become research questions for the agent
 to investigate. It then shows the complete brief for your confirmation. A local checker rejects an
 incomplete or changed brief and changes to recorded decisions. Confirmation binds
-both the brief and the intake decisions; older intake records need renewed
-confirmation with both hashes (see [intake guide](references/intake.md)).
-After you separately approve the search plan, the
+both the brief and the intake decisions. Validation routing choices and confirmation
+also need a user-message reference and supporting quote. Older records without these
+fields must be reviewed against actual conversation evidence, with unresolved choices
+returned to the user (see [intake guide](references/intake.md)). The checker validates
+recorded evidence and hashes; it cannot authenticate messages or prove consent.
+The agent explicitly presents same-session and external CLI validation unless you
+already chose or authorized it to choose. It checks the environment before claiming
+CLI availability. After you separately approve the search plan, or explicitly authorize
+proceeding without that checkpoint, the
 originating agent researches and cites the findings. The chosen validation route
 checks the evidence, and the agent prepares the descriptive report.
 
-The report can use the comprehensive, simple, or an agreed custom structure. Word
-styles are `corporate`, `academic`, and `minimal`:
+The report can use the comprehensive, simple, or an agreed custom structure. At
+delivery, the agent offers Word export unless you already requested or declined it.
+Word styles are `corporate`, `academic`, and `minimal`:
 
 ```text
 uv run scripts/export_to_word.py --input report.md --output report.docx --template corporate

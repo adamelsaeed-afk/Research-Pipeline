@@ -35,20 +35,31 @@ before screening candidates; record and disclose the chosen threshold.
 Keep `scratch/intake.json` with each applicable decision in `pending`, `unclear`,
 `answered`, or `not_applicable`. Record an explicit reason for `not_applicable`; an
 optional answer of “none” is an answer. Never resolve a question from silence, a
-timeout, or an offered default. If asked to decide, propose a specific answer and ask
-the user to confirm it. Keep asking until all relevant branches have clear answers.
+timeout, or an offered default. Apply explicit user instructions to choose or proceed
+within their stated scope; otherwise ask about unresolved choices. Record the
+supporting user message for validation routing and brief confirmation using the
+intake guide's `user_evidence` fields.
+
+Present validation as an explicit intake choice: `same_session` is a separate review
+pass by this agent; `external_cli` uses fresh validator and gap-filler CLI processes.
+Use an earlier explicit choice or permission to choose when it covers this decision.
+Before making claims about installed CLIs, inspect the active environment; report
+unchecked availability as unknown. PATH presence alone does not prove usable delegation.
 
 Show the complete `scratch/research_brief.md` to the user and obtain explicit
 confirmation. A correction reopens affected decisions. Record confirmation against
 the exact brief bytes and recorded decisions as described in the intake guide.
-Changing either requires renewed confirmation. Run:
+Changing either requires confirmation or an existing user instruction that explicitly
+covers the change. A general instruction to continue is not evidence of a validation
+choice that was never presented. Run:
 
 ```text
 python scripts/check_intake.py --record scratch/intake.json --brief scratch/research_brief.md
 ```
 
 The check must pass before drafting a search plan, browsing, delegating, or writing a
-report. It checks recorded completeness and confirmation; the agent remains
+report. It checks recorded completeness, evidence fields, and matching hashes; it
+cannot authenticate user messages or establish consent. The agent remains
 responsible for semantic clarity. An instruction-only skill cannot technically
 intercept unrelated tools in every host runtime.
 
@@ -61,7 +72,8 @@ plan. If a prerequisite fails, report it and obtain the user's choice before res
 
 From the confirmed brief, write `scratch/search_plan.md` with search questions,
 priority sources, and coverage strategy. Obtain the user's separate approval of the
-plan before searching. The originating agent then searches, gathers evidence, and
+plan before searching unless they explicitly authorized proceeding without that
+checkpoint. The originating agent then searches, gathers evidence, and
 writes `scratch/raw_findings.md`. Give each material claim a stable ID, exact claim,
 source URL or document locator, source date where known, and retrieval date. Keep
 search reasoning out of the findings file.
@@ -141,6 +153,11 @@ same check after editing for style. Present the finished Markdown report for the
 user's review.
 
 ## 5. Export and continue
+
+When delivering the Markdown report, offer Word export and the `corporate`, `academic`,
+and `minimal` styles if the user has not already settled that choice. Honor an earlier
+export request, style selection, or decision to keep Markdown only. If awaiting an
+export decision, state that Markdown is delivered and Word export awaits the choice.
 
 After approval of the report and Word style, export when requested:
 

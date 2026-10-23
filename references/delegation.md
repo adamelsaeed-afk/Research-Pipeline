@@ -8,6 +8,10 @@ uses a separate run. Prefer a different product for validation when configured.
 
 ## Before dispatch
 
+During intake, inspect the active environment before asserting that a CLI is present
+or absent. An unchecked route is unknown; finding an executable is only discovery.
+Complete the following usability checks after the user selects external validation.
+
 The confirmed intake names the validator and gap-filler targets. Configure each in a
 local, uncommitted JSON file as documented in README. Confirm the executable and
 version, authentication, source access, chosen model where needed, and access to the

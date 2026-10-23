@@ -47,9 +47,15 @@ def intake(brief: bytes, external=True):
                        validator_transport="direct", gap_filler_transport="direct",
                        validator_model="default", gap_filler_model="provider/model")
     record = {"required_branches": [], "open_branches": [],
-            "decisions": {name: {"state": "answered", "answer": answer}
+            "decisions": {name: {"state": "answered", "answer": answer,
+                                  "user_evidence": {
+                                      "message_ref": "synthetic-test-user-turn",
+                                      "quote": "Use the scope and validation arrangement in this test fixture."}}
                           for name, answer in answers.items()},
             "confirmation": {"confirmed": True,
+                             "user_evidence": {
+                                 "message_ref": "synthetic-test-user-turn",
+                                 "quote": "I approve this test fixture brief and its recorded decisions."},
                              "brief_sha256": hashlib.sha256(brief).hexdigest()}}
     record["confirmation"]["intake_sha256"] = intake_sha256(record)
     return record

@@ -63,6 +63,12 @@ def main() -> int:
                             for key, value in answers.items()},
               "confirmation": {"confirmed": True,
                                "brief_sha256": hashlib.sha256(brief).hexdigest()}}
+    # Synthetic probe bookkeeping is never evidence of a real user's approval.
+    evidence = {"message_ref": "synthetic-source-probe",
+                "quote": "Synthetic probe only: use this target to check the public documentation claim."}
+    for entry in record["decisions"].values():
+        entry["user_evidence"] = evidence.copy()
+    record["confirmation"]["user_evidence"] = evidence.copy()
     record["confirmation"]["intake_sha256"] = intake_sha256(record)
     (root / "intake.json").write_text(json.dumps(record), encoding="utf-8")
     if args.role == "validate":

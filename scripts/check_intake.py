@@ -13,10 +13,21 @@ BASE_DECISIONS = {
     "validation_mode",
 }
 STATES = {"pending", "unclear", "answered", "not_applicable"}
+ROUTING_DECISIONS = {
+    "validation_mode", "validator_cli", "gap_filler_cli", "validator_transport",
+    "gap_filler_transport", "validator_model", "gap_filler_model",
+}
 
 
 def nonempty_text(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def recorded_user_evidence(value) -> bool:
+    """Check audit fields only; this cannot authenticate a conversation or consent."""
+    return (isinstance(value, dict)
+            and nonempty_text(value.get("message_ref"))
+            and nonempty_text(value.get("quote")))
 
 
 def intake_sha256(record: dict) -> str:
@@ -77,6 +88,9 @@ def check(record: dict, brief: bytes) -> list[str]:
             errors.append(f"{key}: answer must be a nonempty string")
         elif state == "not_applicable" and not nonempty_text(entry.get("reason")):
             errors.append(f"{key}: not_applicable requires a nonempty string reason")
+        if (state == "not_applicable" and key in ROUTING_DECISIONS
+                and not key.endswith("_model")):
+            errors.append(f"{key}: must be answered when this routing choice is required")
     for key, entry in decisions.items():
         if not isinstance(entry, dict) or not isinstance(entry.get("state"), str) or entry["state"] not in STATES:
             errors.append(f"{key}: invalid state")
@@ -86,11 +100,17 @@ def check(record: dict, brief: bytes) -> list[str]:
             errors.append(f"{key}: answer must be a nonempty string")
         elif entry.get("state") == "not_applicable" and not nonempty_text(entry.get("reason")):
             errors.append(f"{key}: not_applicable requires a nonempty string reason")
+        if (key in ROUTING_DECISIONS and isinstance(entry, dict)
+                and entry.get("state") == "answered"
+                and not recorded_user_evidence(entry.get("user_evidence"))):
+            errors.append(f"{key}: user_evidence requires a nonempty message_ref and quote")
     if record.get("open_branches") != []:
         errors.append("open_branches must be an empty list")
     confirmation = record.get("confirmation", {})
     if not isinstance(confirmation, dict):
         confirmation = {}
+    if not recorded_user_evidence(confirmation.get("user_evidence")):
+        errors.append("confirmation: user_evidence requires a nonempty message_ref and quote")
     digest = hashlib.sha256(brief).hexdigest()
     if confirmation.get("confirmed") is not True or confirmation.get("brief_sha256") != digest:
         errors.append("user confirmation must match the current brief SHA-256")
