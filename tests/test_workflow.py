@@ -13,7 +13,7 @@ from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from check_intake import BASE_DECISIONS, check
+from check_intake import BASE_DECISIONS, check, intake_sha256
 from research_dispatch import command_for, parse_role_object, run_dispatch, stop_docker_stage, validate_result
 from research_mailbox import process_one, submit
 from preflight_delegate import check_target
@@ -46,11 +46,13 @@ def intake(brief: bytes, external=True):
         answers.update(validator_cli="validator", gap_filler_cli="gap_filler",
                        validator_transport="direct", gap_filler_transport="direct",
                        validator_model="default", gap_filler_model="provider/model")
-    return {"required_branches": [], "open_branches": [],
+    record = {"required_branches": [], "open_branches": [],
             "decisions": {name: {"state": "answered", "answer": answer}
                           for name, answer in answers.items()},
             "confirmation": {"confirmed": True,
                              "brief_sha256": hashlib.sha256(brief).hexdigest()}}
+    record["confirmation"]["intake_sha256"] = intake_sha256(record)
+    return record
 
 
 class IntakeTests(unittest.TestCase):
@@ -140,6 +142,7 @@ class DispatchTests(unittest.TestCase):
             self.setup_files(root)
             record = json.loads((root / "intake.json").read_text())
             record["decisions"]["validator_transport"]["answer"] = "docker"
+            record["confirmation"]["intake_sha256"] = intake_sha256(record)
             (root / "intake.json").write_text(json.dumps(record))
             config = json.loads((root / "config.json").read_text())
             config["targets"]["validator"].update(transport="docker", docker={
@@ -186,6 +189,7 @@ class DispatchTests(unittest.TestCase):
                 self.setup_files(root)
                 record = json.loads((root / "intake.json").read_text())
                 record["decisions"]["validator_transport"]["answer"] = transport
+                record["confirmation"]["intake_sha256"] = intake_sha256(record)
                 (root / "intake.json").write_text(json.dumps(record))
                 config = json.loads((root / "config.json").read_text())
                 choice = config["targets"]["validator"]
@@ -233,7 +237,8 @@ class DispatchTests(unittest.TestCase):
             with patch("research_dispatch.subprocess.run", return_value=completed) as run:
                 self.assertEqual(stop_docker_stage(choice, stage), "matched=1")
             command = run.call_args.args[0]
-            self.assertEqual(command[:4], ["docker", "exec", "opencode", "sh"])
+            self.assertEqual(Path(command[0]).stem.lower(), 'docker')
+            self.assertEqual(command[1:4], ["exec", "opencode", "sh"])
             self.assertEqual(command[-1], "/shared/dispatch/unique-run")
 
     def test_approved_with_limits_requires_mapped_nonmaterial_uncertainty(self):
@@ -242,14 +247,14 @@ class DispatchTests(unittest.TestCase):
                   "checks": [{"claim_id": "F1", "source_url": "https://example.org",
                               "evidence": "The source cannot establish the minor qualifier", "verdict": "partial"}],
                   "limitations": [{"claim_id": "F1", "reason": "Minor qualifier remains uncertain"}]}
-        validate_result("validate", result)
+        validate_result("validate", result, {"F1"})
         result["limitations"] = []
         with self.assertRaises(ValueError):
-            validate_result("validate", result)
+            validate_result("validate", result, {"F1"})
         result["limitations"] = [{"claim_id": "F1", "reason": "Minor qualifier remains uncertain"}]
         result["checks"][0]["verdict"] = "mismatch"
         with self.assertRaises(ValueError):
-            validate_result("validate", result)
+            validate_result("validate", result, {"F1"})
 
     def test_narrated_role_result_is_accepted_but_partial_or_duplicate_is_not(self):
         payload = {"role": "validate", "verdict": "approved"}
@@ -351,11 +356,12 @@ class DispatchTests(unittest.TestCase):
             stage = root / "runs" / "example"
             stage.mkdir(parents=True)
             choice = {"cli": "agy", "transport": "docker", "docker": {
-                "container": "<container-name>", "host_mount": str(root),
+                "container": "test-container", "host_mount": str(root),
                 "container_mount": "/research-shared"}}
             command, cwd = command_for(choice, "Check sources", stage)
-            self.assertEqual(command[:6], ["docker", "exec", "-i", "--workdir",
-                                           "/research-shared/runs/example", "<container-name>"])
+            self.assertEqual(Path(command[0]).stem.lower(), 'docker')
+            self.assertEqual(command[1:8], ["exec", "-i", "--env", "RESEARCH_DISPATCH_ID=example", "--workdir",
+                                           "/research-shared/runs/example", "test-container"])
             self.assertIsNone(cwd)
             with self.assertRaises(ValueError):
                 command_for(choice, "Check sources", root.parent)
@@ -392,11 +398,12 @@ class DispatchTests(unittest.TestCase):
             request = requests / "badjob.json"
             request.write_text(json.dumps({"id": "badjob", "role": "validate",
                 "target": "validator", "record": "../outside.json", "brief": "brief.md",
-                "input": "findings.md", "timeout": 10}), encoding="utf-8")
+                "input": "findings.md", "timeout": 10, "expires_at": time.time() + 40}), encoding="utf-8")
             with patch("research_dispatch.subprocess.Popen", side_effect=AssertionError("launched")):
                 process_one(root, root / "config.json", request)
             response = json.loads((root / "responses" / "badjob.json").read_text())
             self.assertEqual(response["status"], "failed")
+            self.assertIn("outside shared root", response["error"])
 
 
 if __name__ == "__main__":

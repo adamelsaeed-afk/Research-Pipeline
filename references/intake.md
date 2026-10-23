@@ -63,8 +63,22 @@ Write a concise `research_brief.md` with the research questions, subjects and
 inclusion rules, geography, period, depth, requested comparison or sizing dimensions,
 exclusions, report structure, validation arrangement, and any relevant branch choices.
 Show it to the user and ask for explicit confirmation. Record confirmation of this
-exact version by storing its SHA-256 digest in `intake.json`. If the brief changes,
-confirmation becomes invalid and must be renewed.
+exact version by storing both `brief_sha256` and `intake_sha256` in `intake.json`.
+The second digest covers all recorded decisions and the required/open branch lists,
+using the checker's canonical JSON representation. A change to the brief, a scope
+decision, an operational choice or a branch invalidates confirmation. Existing
+records without the intake digest need renewed confirmation; do not silently
+backfill or refresh a digest merely to pass the gate.
+
+To prepare the hashes for the version being reviewed, run:
+
+```text
+python scripts/check_intake.py --record intake.json --brief research_brief.md --confirmation-hashes
+```
+
+This read-only command prints the hashes; it does not approve anything. Show the
+complete brief and decisions to the user. After explicit confirmation, store the
+two hashes under `confirmation` and run the normal checker before proceeding.
 
 Example record shape (the digest below is a placeholder):
 
@@ -87,7 +101,11 @@ Example record shape (the digest below is a placeholder):
     "feature_definition": {"state": "answered", "answer": "Documented end-user capability"},
     "comparison_denominator": {"state": "answered", "answer": "Eligible products in the agreed sample"}
   },
-  "confirmation": {"confirmed": true, "brief_sha256": "<sha256-of-exact-brief-file>"}
+  "confirmation": {
+    "confirmed": true,
+    "brief_sha256": "<sha256-of-exact-brief-file>",
+    "intake_sha256": "<canonical-intake-sha256-from-checker>"
+  }
 }
 ```
 

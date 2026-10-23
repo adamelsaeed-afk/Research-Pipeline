@@ -12,8 +12,24 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from check_intake import BASE_DECISIONS
+from check_intake import BASE_DECISIONS, intake_sha256
 from research_dispatch import run_dispatch, target_config
+from strict_json import read as read_json
+
+SOURCE = 'https://docs.python.org/3/library/json.html'
+
+
+def source_probe_passed(role, result):
+    if role == 'validate':
+        return (result.get('verdict') == 'approved' and result.get('checked_claim_ids') == ['P1']
+                and not result.get('issues') and bool(result.get('checks'))
+                and all(check.get('claim_id') == 'P1' and check.get('verdict') == 'confirmed'
+                        and check.get('source_url', '').split('#', 1)[0] == SOURCE
+                        for check in result['checks']))
+    return (result.get('verdict') == 'completed' and not result.get('unresolved')
+            and bool(result.get('changes')) and all(change.get('gap_id') == 'G1'
+                and SOURCE in [url.split('#', 1)[0] for url in change.get('source_urls', [])]
+                for change in result['changes']))
 
 
 def main() -> int:
@@ -25,11 +41,12 @@ def main() -> int:
                         help="Write synthetic probe inputs without dispatching")
     parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args()
-    config = json.loads(args.config.read_text(encoding="utf-8"))
+    config = read_json(args.config)
     choice = target_config(config, args.target)
     if choice.get("transport") == "docker":
-        root = Path(choice["docker"]["host_mount"]) / "probe"
-        root.mkdir(parents=True, exist_ok=True)
+        parent = Path(choice["docker"]["host_mount"]) / "probe"
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root = Path(tempfile.mkdtemp(prefix='source-check-', dir=parent))
     else:
         root = Path(tempfile.mkdtemp(prefix="research-delegate-probe-"))
     brief = b"Probe one harmless documentation claim for CLI source access."
@@ -46,6 +63,7 @@ def main() -> int:
                             for key, value in answers.items()},
               "confirmation": {"confirmed": True,
                                "brief_sha256": hashlib.sha256(brief).hexdigest()}}
+    record["confirmation"]["intake_sha256"] = intake_sha256(record)
     (root / "intake.json").write_text(json.dumps(record), encoding="utf-8")
     if args.role == "validate":
         input_path = root / "findings.md"
@@ -70,7 +88,12 @@ def main() -> int:
         print(f"Probe failed: {exc}\nArtifacts: {root}", file=sys.stderr)
         return 2
     print(f"Result: {path}")
-    print(path.read_text(encoding="utf-8"))
+    result = read_json(path)
+    print(json.dumps(result, indent=2))
+    if not source_probe_passed(args.role, result):
+        print('Probe did not establish successful source checking; inspect retained evidence.', file=sys.stderr)
+        return 3
+    print('Structured source probe passed; inspect tool logs to establish actual source access.')
     return 0
 
 

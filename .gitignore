@@ -7,6 +7,11 @@ INSTRUCTIONS.md
 !.env.example
 !.env.template
 
+# Local executable/container configuration; keep shared examples credential-free
+local-config.json
+local_dispatch_config.json
+*.local.json
+
 
 
 # Scratch directories from research runs and phase testing

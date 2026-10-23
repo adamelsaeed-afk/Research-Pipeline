@@ -12,12 +12,15 @@ import subprocess
 import sys
 
 from check_intake import checked_files
-from research_dispatch import confirmed_target, target_config
+from research_dispatch import confirmed_target, target_config, child_environment, native_program
+from strict_json import read as read_json
 
 
 def version_probe(command: list[str]) -> str:
+    command = [native_program(command[0]), *command[1:]]
     result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                            text=True, timeout=30, shell=False)
+                            text=True, encoding='utf-8', errors='replace', timeout=30, shell=False,
+                            env=child_environment({}))
     if result.returncode:
         raise RuntimeError(f"{' '.join(command[:2])} exited {result.returncode}: {result.stderr.strip()[-500:]}")
     lines = (result.stdout or result.stderr).strip().splitlines()
@@ -59,7 +62,7 @@ def main() -> int:
         record, _ = checked_files(args.record, args.brief)
         if record["decisions"]["validation_mode"]["answer"] != "external_cli":
             raise ValueError("confirmed brief did not select external CLI validation")
-        config = json.loads(args.config.read_text(encoding="utf-8"))
+        config = read_json(args.config)
         names = {record["decisions"][key]["answer"]
                  for key in ("validator_cli", "gap_filler_cli")}
         for role, key in (("validate", "validator_cli"), ("gap_fill", "gap_filler_cli")):

@@ -1,10 +1,10 @@
 #!/bin/sh
 # Submit a fixed research job from a Linux container sharing files with the host.
-# Usage: sh submit_research_job.sh ROOT RECORD BRIEF ROLE TARGET INPUT [TIMEOUT]
+# Usage: sh submit_research_job.sh ROOT RECORD BRIEF ROLE TARGET INPUT [TIMEOUT] [INPUT_IDS]
 set -eu
 
-if [ "$#" -lt 6 ] || [ "$#" -gt 7 ]; then
-  echo "Usage: sh submit_research_job.sh ROOT RECORD BRIEF ROLE TARGET INPUT [TIMEOUT]" >&2
+if [ "$#" -lt 6 ] || [ "$#" -gt 8 ]; then
+  echo "Usage: sh submit_research_job.sh ROOT RECORD BRIEF ROLE TARGET INPUT [TIMEOUT] [INPUT_IDS]" >&2
   exit 2
 fi
 
@@ -15,6 +15,12 @@ role=$4
 target=$5
 input=$6
 timeout=${7:-600}
+input_ids=${8:-}
+if [ -n "$input_ids" ]; then
+  set -- "$record" "$brief" "$input" "$input_ids"
+else
+  set -- "$record" "$brief" "$input"
+fi
 
 case "$role" in validate|gap_fill) ;; *) echo "Invalid role" >&2; exit 2 ;; esac
 case "$target" in ''|*[!a-zA-Z0-9_-]*) echo "Invalid target" >&2; exit 2 ;; esac
@@ -23,7 +29,7 @@ if [ "$timeout" -lt 1 ] || [ "$timeout" -gt 3600 ]; then
   echo "Timeout must be 1-3600 seconds" >&2
   exit 2
 fi
-for value in "$record" "$brief" "$input"; do
+for value in "$@"; do
   case "$value" in
     ''|/*|../*|*/../*|*/..|*[!a-zA-Z0-9._/-]*)
       echo "Use safe relative file paths beneath ROOT" >&2; exit 2 ;;
@@ -41,9 +47,14 @@ job_id=$(tr -d '-' < /proc/sys/kernel/random/uuid)
 mkdir -p "$root/requests" "$root/responses"
 temporary="$root/requests/$job_id.tmp"
 request="$root/requests/$job_id.json"
+expires_at=$(($(date +%s) + timeout + 30))
 trap 'rm -f "$temporary"' EXIT HUP INT TERM
-printf '{"id":"%s","role":"%s","target":"%s","record":"%s","brief":"%s","input":"%s","timeout":%s}\n' \
-  "$job_id" "$role" "$target" "$record" "$brief" "$input" "$timeout" > "$temporary"
+printf '{"id":"%s","role":"%s","target":"%s","record":"%s","brief":"%s","input":"%s","timeout":%s,"expires_at":%s' \
+  "$job_id" "$role" "$target" "$record" "$brief" "$input" "$timeout" "$expires_at" > "$temporary"
+if [ -n "$input_ids" ]; then
+  printf ',"input_ids":"%s"' "$input_ids" >> "$temporary"
+fi
+printf '}\n' >> "$temporary"
 mv "$temporary" "$request"
 echo "Submitted $job_id"
 
@@ -61,4 +72,7 @@ done
 cat "$response"
 if ! grep -q '"status": "completed"' "$response"; then
   exit 2
+fi
+if grep -q '"requires_attention": true' "$response"; then
+  exit 3
 fi

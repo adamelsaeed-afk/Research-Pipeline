@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import sys
+import textwrap
 from pathlib import Path
 
 from docx import Document
@@ -110,6 +111,22 @@ def _mark_header_row(row) -> None:
     header = OxmlElement("w:tblHeader")
     header.set(qn("w:val"), "true")
     tr_pr.append(header)
+
+
+def _row_fits_page(row, section, font_size_pt: float) -> bool:
+    """Conservative size guard: Word can clip oversized non-splitting rows.
+
+    Use a full font-size character width and generous line height, retaining
+    splitting when layout is uncertain. This isn't a substitute for render QA.
+    """
+    available_height = section.page_height.pt - section.top_margin.pt - section.bottom_margin.pt
+    maximum_height = 0
+    for cell in row.cells:
+        characters = max(1, int((cell.width.pt - 12) / font_size_pt))
+        lines = sum(max(1, len(textwrap.wrap(line, width=characters)))
+                    for paragraph in cell.paragraphs for line in paragraph.text.split('\n'))
+        maximum_height = max(maximum_height, lines * font_size_pt * 1.5 + 4)
+    return maximum_height < available_height - font_size_pt * 4
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +310,14 @@ class Renderer:
         if not rows:
             return
         ncols = max(len(r["cells"]) for r in rows)
+        # Keep short introductory context with the table, without chaining long
+        # narrative paragraphs or every body row onto one page.
+        if self.doc.paragraphs:
+            context = self.doc.paragraphs[-1]
+            if (context._p.getnext() is not None
+                    and context._p.getnext().tag == qn("w:sectPr")
+                    and 0 < len(context.text) <= 500):
+                context.paragraph_format.keep_with_next = True
         table = self.doc.add_table(rows=len(rows), cols=ncols)
         table.alignment = WD_TABLE_ALIGNMENT.LEFT
         tcfg = self.s["table"]
@@ -314,6 +339,7 @@ class Renderer:
                 pf.line_spacing = 1.0
                 pf.space_before = Pt(2)
                 pf.space_after = Pt(2)
+                pf.keep_with_next = bool(row["header"])
                 if align == "right":
                     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 elif align == "center":
@@ -329,6 +355,8 @@ class Renderer:
                 bold = tcfg["header_bold"] if is_header else False
                 if inline_tok is not None:
                     self._render_inline(inline_tok.children, p, bold=bold, color=color)
+            if _row_fits_page(word_row, self.doc.sections[-1], self.s["body_size_pt"]):
+                word_row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))
 
     def _parse_row(self, row_tokens: list) -> list:
         cells = []
