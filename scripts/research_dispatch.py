@@ -26,6 +26,83 @@ from strict_json import loads as json_loads, read as read_json, read_text
 CLIS = {"agy", "opencode", "codex"}
 ROLES = {"validate", "gap_fill"}
 
+LEDGER_DEFAULT_NAME = "run_ledger.jsonl"
+
+
+def now_stamp() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def ledger_path_for(args: argparse.Namespace) -> Path:
+    """One ledger per run-directory parent, so every dispatch of an effort
+    shares the run count. An explicit --ledger overrides the default."""
+    explicit = getattr(args, "ledger", None)
+    return Path(explicit) if explicit is not None else args.run_dir.parent / LEDGER_DEFAULT_NAME
+
+
+def ledger_launches(path: Path, role: str) -> int:
+    """Count prior launch entries for a role. Any unreadable or corrupt
+    record fails closed rather than skipping enforcement."""
+    if not path.exists():
+        return 0
+    count = 0
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"run ledger {path} is corrupt at line {number}; investigate before dispatching") from exc
+        if isinstance(entry, dict) and entry.get("event") == "launch" and entry.get("role") == role:
+            count += 1
+    return count
+
+
+def ledger_append(path: Path, entry: dict, metadata: dict | None = None) -> None:
+    """Append one JSON line, the only write this ledger ever receives. A
+    failed append is recorded in run metadata and never replaces the
+    dispatch's own outcome; a launch line without a complete line stays
+    detectable in the ledger itself."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
+    except OSError as exc:
+        if metadata is not None:
+            metadata["ledger_error"] = str(exc)
+
+
+def enforce_run_limit(record: dict, role: str, ledger: Path) -> None:
+    """Refuse a dispatch that would exceed the intake-approved run count for
+    its role. Failed, timed-out and cancelled launches count because they
+    consume real work; a dispatch refused before launch does not. An absent
+    or unset decision enforces nothing (the checker treats unset as an open
+    branch). The answer is the checker-compatible JSON string form or an
+    already-parsed mapping."""
+    decision = record.get("decisions", {}).get("approved_run_counts")
+    if not isinstance(decision, dict) or decision.get("state") != "answered":
+        return
+    limits = decision.get("answer")
+    if isinstance(limits, str):
+        try:
+            limits = json.loads(limits)
+        except json.JSONDecodeError as exc:
+            raise ValueError("approved_run_counts answer must be a JSON object of role to count") from exc
+    if not isinstance(limits, dict):
+        return
+    limit = limits.get(role)
+    if limit is None:
+        return
+    if type(limit) is not int or limit < 0:
+        raise ValueError("approved_run_counts must map role names to nonnegative integers")
+    prior = ledger_launches(ledger, role)
+    if prior >= limit:
+        raise ValueError(
+            f"approved run limit reached for role {role}: {prior} launched runs are recorded, "
+            f"the limit is {limit}; exceeding it requires a new approved_run_counts intake "
+            "decision with recorded user evidence")
+
 
 def native_program(executable: str) -> str:
     if (not nonempty_text(executable) or executable != executable.strip()
@@ -550,6 +627,11 @@ def run_dispatch(args: argparse.Namespace) -> Path:
     config = read_json(args.config)
     choice = target_config(config, args.target)
     confirmed_target(record, args.role, args.target, choice)
+    ledger = ledger_path_for(args)
+    # Fail closed on an unreadable or corrupt ledger even when no limit is
+    # recorded: run counts must be trustworthy before any dispatch.
+    ledger_launches(ledger, args.role)
+    enforce_run_limit(record, args.role, ledger)
     stage = (args.run_dir / "dispatch" / uuid.uuid4().hex).resolve()
     stage.mkdir(mode=0o700, parents=True, exist_ok=False)
     (stage / "brief.md").write_bytes(brief)
@@ -557,6 +639,7 @@ def run_dispatch(args: argparse.Namespace) -> Path:
     shutil.copyfile(args.input, stage / input_name)
     record_path = stage / "dispatch.json"
     started_clock = time.monotonic()
+    launched = False
     metadata = {"role": args.role, "target": args.target, "cli": choice["cli"],
                 "transport": choice.get("transport", "direct"),
                 "status": "started", "run_id": stage.name,
@@ -600,6 +683,14 @@ def run_dispatch(args: argparse.Namespace) -> Path:
                                        text=True, encoding="utf-8", errors="replace", shell=False,
                                        env=child_environment(choice))
             metadata["process_id"] = process.pid
+            launched = True
+            # Contract failures before this line never launched a CLI and
+            # leave no ledger lines; everything after it consumes real work.
+            ledger_append(ledger, {
+                "ts": now_stamp(), "run_id": stage.name, "event": "launch",
+                "role": args.role, "target": args.target, "cli": choice["cli"],
+                "model": choice.get("model"), "staged_input_bytes": len(staged_input),
+                "brief_bytes": len(brief), "timeout_s": args.timeout}, metadata)
             try:
                 payload = json.dumps({"event": "user", "message": {"content": prompt}}) + "\n" if choice["cli"] == "agy" else None
                 process.communicate(input=payload, timeout=min(args.timeout, remaining))
@@ -634,6 +725,13 @@ def run_dispatch(args: argparse.Namespace) -> Path:
             metadata["process_tree_cleanup_error"] = tree.cleanup_error
         metadata["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         metadata["elapsed_seconds"] = round(time.monotonic() - started_clock, 3)
+        if launched:
+            ledger_append(ledger, {
+                "ts": now_stamp(), "run_id": stage.name, "event": "complete",
+                "exit_code": metadata.get("exit_code"), "verdict": metadata.get("role_verdict"),
+                "duration_s": metadata.get("elapsed_seconds"),
+                # A5 adds per-CLI counter extraction; absent telemetry stays null.
+                "tokens_reported": None}, metadata)
         record_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return stage / "result.json"
 
@@ -648,6 +746,8 @@ def main() -> int:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--input-ids", type=Path, help="JSON ID list for an input layout without legacy ID records")
     parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--ledger", type=Path,
+                        help="append-only run ledger; default is run_ledger.jsonl in the run directory's parent")
     parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
     try:
