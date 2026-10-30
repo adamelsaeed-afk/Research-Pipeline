@@ -19,6 +19,11 @@ scratch/
 /scratch z/
 /test_reports/
 
+# Local live-test archives kept out of the repository by owner decision
+/real_test_run/
+/Documentation/Ziad's live test run/
+/Documentation/Friend_test_run.md
+
 # Python bytecode
 __pycache__/
 *.pyc
