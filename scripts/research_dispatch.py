@@ -232,7 +232,14 @@ def parse_role_object(content: str) -> dict:
         prefix = content[:position]
         # Only a standalone final object after plain text is supported. In
         # particular, do not advance to a nested opening brace on decode failure.
-        if (position < 0 or any(c in prefix for c in "{}[]\"'`~>")
+        # Apostrophes within words are narration, not quotation delimiters.
+        quoted_prefix = any(
+            char == "'" and not (
+                index > 0 and index + 1 < len(prefix)
+                and prefix[index - 1].isalpha() and prefix[index + 1].isalpha()
+            ) for index, char in enumerate(prefix)
+        )
+        if (position < 0 or any(c in prefix for c in "{}[]\"`~>") or quoted_prefix
                 or prefix.rsplit('\n', 1)[-1].strip()):
             raise ValueError("external CLI must return one standalone final role JSON object")
         try:

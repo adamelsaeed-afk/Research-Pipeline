@@ -66,6 +66,17 @@ class ResultContractTests(unittest.TestCase):
             with self.subTest(content=content), self.assertRaises(ValueError):
                 parse_role_object(content)
 
+    def test_parser_accepts_contractions_but_rejects_quotation_delimiters(self):
+        result = {"role": "validate", "verdict": "approved"}
+        encoded = json.dumps(result)
+        for prefix in ("I'll check the source.\n", "I've checked it; it's supported.\n"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(parse_role_object(prefix + encoded), result)
+        for prefix in ("'\n", "The result is '\n", "'example'\n", "I'll quote '\n"):
+            with self.subTest(prefix=prefix):
+                with self.assertRaises(ValueError):
+                    parse_role_object(prefix + encoded)
+
     def test_parser_accepts_plain_final_result_with_optional_narration(self):
         result = fixtures.validation()
         result['summary'] = 'Evidence contains {braces}, [arrays], and "quotes"'
