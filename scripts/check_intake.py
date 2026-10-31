@@ -18,6 +18,19 @@ ROUTING_DECISIONS = {
     "gap_filler_transport", "validator_model", "gap_filler_model",
 }
 
+# Delegated role names for the approved_run_counts table; single source of
+# truth — the dispatcher's ROLES derives from this tuple.
+DELEGATED_ROLE_NAMES = ("validate", "gap_fill")
+
+
+def valid_run_counts(value) -> bool:
+    """Structural check for the one decision whose answer is a table: known
+    delegated role names mapped to nonnegative integer counts, at least one
+    entry. type(v) is int also excludes booleans."""
+    return (isinstance(value, dict) and bool(value)
+            and all(isinstance(k, str) and k in DELEGATED_ROLE_NAMES for k in value)
+            and all(type(v) is int and v >= 0 for v in value.values()))
+
 
 def nonempty_text(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
@@ -84,6 +97,9 @@ def check(record: dict, brief: bytes) -> list[str]:
             errors.append(f"{key}: invalid state")
         elif state in {"pending", "unclear"}:
             errors.append(f"{key}: {state}")
+        elif (state == "answered" and key == "approved_run_counts"):
+            if not valid_run_counts(entry.get("answer")):
+                errors.append(f"{key}: answer must map delegated role names to nonnegative integer counts")
         elif state == "answered" and not nonempty_text(entry.get("answer")):
             errors.append(f"{key}: answer must be a nonempty string")
         elif state == "not_applicable" and not nonempty_text(entry.get("reason")):
@@ -96,6 +112,9 @@ def check(record: dict, brief: bytes) -> list[str]:
             errors.append(f"{key}: invalid state")
         elif entry.get("state") in {"pending", "unclear"}:
             errors.append(f"{key}: unresolved branch")
+        elif (entry.get("state") == "answered" and key == "approved_run_counts"):
+            if not valid_run_counts(entry.get("answer")):
+                errors.append(f"{key}: answer must map delegated role names to nonnegative integer counts")
         elif entry.get("state") == "answered" and not nonempty_text(entry.get("answer")):
             errors.append(f"{key}: answer must be a nonempty string")
         elif entry.get("state") == "not_applicable" and not nonempty_text(entry.get("reason")):

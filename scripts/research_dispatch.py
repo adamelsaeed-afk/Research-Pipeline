@@ -18,13 +18,13 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
-from check_intake import checked_files, nonempty_text
+from check_intake import DELEGATED_ROLE_NAMES, checked_files, nonempty_text
 from process_tree import ProcessTree
 from strict_json import loads as json_loads, read as read_json, read_text
 
 
 CLIS = {"agy", "opencode", "codex"}
-ROLES = {"validate", "gap_fill"}
+ROLES = set(DELEGATED_ROLE_NAMES)
 
 LEDGER_DEFAULT_NAME = "run_ledger.jsonl"
 
@@ -78,19 +78,14 @@ def enforce_run_limit(record: dict, role: str, ledger: Path) -> None:
     its role. Failed, timed-out and cancelled launches count because they
     consume real work; a dispatch refused before launch does not. An absent
     or unset decision enforces nothing (the checker treats unset as an open
-    branch). The answer is the checker-compatible JSON string form or an
-    already-parsed mapping."""
+    branch). The checker has validated the answer's shape; this stays
+    fail-closed if a non-object ever reaches it."""
     decision = record.get("decisions", {}).get("approved_run_counts")
     if not isinstance(decision, dict) or decision.get("state") != "answered":
         return
     limits = decision.get("answer")
-    if isinstance(limits, str):
-        try:
-            limits = json.loads(limits)
-        except json.JSONDecodeError as exc:
-            raise ValueError("approved_run_counts answer must be a JSON object of role to count") from exc
     if not isinstance(limits, dict):
-        return
+        raise ValueError("approved_run_counts answer must map delegated role names to nonnegative integer counts")
     limit = limits.get(role)
     if limit is None:
         return

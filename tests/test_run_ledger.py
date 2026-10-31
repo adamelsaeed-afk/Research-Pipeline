@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import test_workflow as fixtures
-from check_intake import intake_sha256
+from check_intake import check, intake_sha256
 from research_dispatch import ledger_launches, run_dispatch
 
 
@@ -29,12 +29,12 @@ def prepared_options(root: Path, ledger=None):
 
 
 def set_limit(root: Path, limits: dict):
-    """Record the decision in the checker-compatible JSON string form and
-    rebind the confirmation digest to the changed decisions."""
+    """Record the decision in the canonical object form and rebind the
+    confirmation digest to the changed decisions."""
     record = json.loads((root / "intake.json").read_text(encoding="utf-8"))
     record["decisions"]["approved_run_counts"] = {
         "state": "answered",
-        "answer": json.dumps(limits),
+        "answer": limits,
         "user_evidence": {"message_ref": "synthetic-test-user-turn",
                           "quote": "Approved run counts for this research effort."}}
     record["confirmation"]["intake_sha256"] = intake_sha256(record)
@@ -161,6 +161,47 @@ class RunLedgerTests(unittest.TestCase):
             metadata = json.loads((result.parent / "dispatch.json").read_text())
             self.assertIn("ledger_error", metadata)
             self.assertEqual(metadata["status"], "completed")
+
+
+class RunCountCheckerTests(unittest.TestCase):
+    """The one decision whose answer is a table gets structural validation;
+    the generic string rule is unchanged for every other decision."""
+
+    def checker_errors(self, decision, answer):
+        brief = b"Run limit checker fixture."
+        record = fixtures.intake(brief)
+        record["decisions"][decision] = {
+            "state": "answered", "answer": answer,
+            "user_evidence": {"message_ref": "synthetic-test-user-turn",
+                              "quote": "Approved run counts for this research effort."}}
+        record["confirmation"]["intake_sha256"] = intake_sha256(record)
+        return [error for error in check(record, brief) if decision in error]
+
+    def test_object_answer_passes(self):
+        self.assertEqual(self.checker_errors("approved_run_counts", {"validate": 2, "gap_fill": 3}), [])
+
+    def test_unknown_role_name_rejected(self):
+        self.assertTrue(self.checker_errors("approved_run_counts", {"revalidat": 2}))
+
+    def test_negative_count_rejected(self):
+        self.assertTrue(self.checker_errors("approved_run_counts", {"validate": -1}))
+
+    def test_boolean_count_rejected(self):
+        self.assertTrue(self.checker_errors("approved_run_counts", {"validate": True}))
+
+    def test_empty_table_rejected(self):
+        self.assertTrue(self.checker_errors("approved_run_counts", {}))
+
+    def test_string_answer_rejected(self):
+        self.assertTrue(self.checker_errors("approved_run_counts", json.dumps({"validate": 2})))
+
+    def test_generic_string_rule_unchanged(self):
+        brief = b"Run limit checker fixture."
+        record = fixtures.intake(brief)
+        record["decisions"]["geography"]["answer"] = {"scope": "worldwide"}
+        record["confirmation"]["intake_sha256"] = intake_sha256(record)
+        self.assertTrue(any("geography" in error and "nonempty string" in error
+                            for error in check(record, brief)))
 
 
 if __name__ == "__main__":
