@@ -16,11 +16,16 @@ STATES = {"pending", "unclear", "answered", "not_applicable"}
 ROUTING_DECISIONS = {
     "validation_mode", "validator_cli", "gap_filler_cli", "validator_transport",
     "gap_filler_transport", "validator_model", "gap_filler_model",
+    "revalidator_cli", "revalidator_transport", "revalidator_model",
+    "research_mode", "researcher_cli", "researcher_transport", "researcher_model",
+    "approved_concurrency",
 }
 
 # Delegated role names for the approved_run_counts table; single source of
-# truth — the dispatcher's ROLES derives from this tuple.
-DELEGATED_ROLE_NAMES = ("validate", "gap_fill")
+# truth — the dispatcher's ROLES derives from this tuple. Revalidation is a
+# first-class role: a fresh validation pass over corrected findings. Research
+# is the delegated primary-researcher role.
+DELEGATED_ROLE_NAMES = ("validate", "gap_fill", "revalidate", "research")
 
 
 def valid_run_counts(value) -> bool:
@@ -30,6 +35,14 @@ def valid_run_counts(value) -> bool:
     return (isinstance(value, dict) and bool(value)
             and all(isinstance(k, str) and k in DELEGATED_ROLE_NAMES for k in value)
             and all(type(v) is int and v >= 0 for v in value.values()))
+
+
+def valid_concurrency(value) -> bool:
+    """Structural check for the parallel-launch cap table. A cap of zero
+    would mean 'never launch', so values must be at least 1."""
+    return (isinstance(value, dict) and bool(value)
+            and all(isinstance(k, str) and k in DELEGATED_ROLE_NAMES for k in value)
+            and all(type(v) is int and v >= 1 for v in value.values()))
 
 
 def nonempty_text(value) -> bool:
@@ -85,6 +98,21 @@ def check(record: dict, brief: bytes) -> list[str]:
                 errors.append(f"{role}_transport must be direct or docker")
     elif not isinstance(mode, str) or mode not in {"same_session", "external_cli"}:
         errors.append("validation_mode must be same_session or external_cli")
+    research_mode_entry = decisions.get("research_mode")
+    research_mode = research_mode_entry.get("answer") if isinstance(research_mode_entry, dict) else None
+    if research_mode is not None and research_mode not in {"coordinator", "delegated"}:
+        errors.append("research_mode must be coordinator or delegated")
+    if research_mode == "delegated":
+        # Delegated research needs its own routing decisions; it can pair
+        # with either validation mode.
+        required |= {"researcher_cli", "researcher_transport", "researcher_model"}
+        researcher_cli = decisions.get("researcher_cli")
+        if not isinstance(researcher_cli, dict) or not isinstance(researcher_cli.get("answer"), str):
+            errors.append("researcher_cli must be a target name")
+        researcher_transport = decisions.get("researcher_transport")
+        transport = researcher_transport.get("answer") if isinstance(researcher_transport, dict) else None
+        if transport not in {"direct", "docker"}:
+            errors.append("researcher_transport must be direct or docker")
     if not isinstance(research_type, str) or research_type not in {"market", "technical"}:
         errors.append("research_type must be market or technical")
     for key in sorted(required):
@@ -100,6 +128,9 @@ def check(record: dict, brief: bytes) -> list[str]:
         elif (state == "answered" and key == "approved_run_counts"):
             if not valid_run_counts(entry.get("answer")):
                 errors.append(f"{key}: answer must map delegated role names to nonnegative integer counts")
+        elif (state == "answered" and key == "approved_concurrency"):
+            if not valid_concurrency(entry.get("answer")):
+                errors.append(f"{key}: answer must map delegated role names to positive integer caps")
         elif state == "answered" and not nonempty_text(entry.get("answer")):
             errors.append(f"{key}: answer must be a nonempty string")
         elif state == "not_applicable" and not nonempty_text(entry.get("reason")):
@@ -115,6 +146,9 @@ def check(record: dict, brief: bytes) -> list[str]:
         elif (entry.get("state") == "answered" and key == "approved_run_counts"):
             if not valid_run_counts(entry.get("answer")):
                 errors.append(f"{key}: answer must map delegated role names to nonnegative integer counts")
+        elif (entry.get("state") == "answered" and key == "approved_concurrency"):
+            if not valid_concurrency(entry.get("answer")):
+                errors.append(f"{key}: answer must map delegated role names to positive integer caps")
         elif entry.get("state") == "answered" and not nonempty_text(entry.get("answer")):
             errors.append(f"{key}: answer must be a nonempty string")
         elif entry.get("state") == "not_applicable" and not nonempty_text(entry.get("reason")):

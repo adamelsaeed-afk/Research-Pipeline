@@ -1,10 +1,12 @@
 # External research delegation
 
-The originating agent does all general research and owns the report. A validator
-checks staged claims against sources. A gap filler addresses identified issues.
-Each dispatch starts a fresh `agy`, `opencode`, or `codex` CLI process; no resume or
-continuation option is used. The same CLI product may fill both roles, but each pass
-uses a separate run. Prefer a different product for validation when configured.
+The originating agent owns the brief, the plan, every checkpoint, and the report. Four
+delegated roles run through the dispatcher: the researcher (only when the confirmed research
+mode is `delegated`), the validator, the gap filler, and the revalidator — a fresh validation
+pass over corrected findings that by default reuses the confirmed validator routing. Each
+dispatch starts a fresh `agy`, `opencode`, or `codex` CLI process; no resume or
+continuation option is used. Each pass uses a separate run; prefer a different product for
+validation when configured.
 
 ## Before dispatch
 
@@ -70,6 +72,11 @@ python scripts/research_dispatch.py --config <local-config.json> --record <intak
 
 The intake checker runs again on each dispatch. A new directory contains the
 brief, role input, prompt and input ID inventory bound to the staged input's SHA-256.
+Roles are `validate`, `gap_fill`, `revalidate` (a validation pass over corrected
+findings; input `findings.md`), and `research` (only with confirmed research mode
+`delegated`; input `questions.md` carrying question IDs). A research result accounts for
+every question through findings or explicit unanswered entries, and its findings require
+validation before use.
 Legacy ID headings such as `## C1 Finding` or records such as `G1: Verify the claim`
 work directly. References in prose, tables and fenced examples do not create IDs.
 For other layouts, add `--input-ids <ids.json>` with a nonempty JSON string list of
@@ -98,6 +105,17 @@ or contract failure; exit 130 is cancellation. Dispatch metadata includes
 stderr prints the notice.
 Relay attention notices to the user before advancing the checkpoint. They are
 caller-visible feedback, not a standalone notification service.
+
+Every dispatch appends two lines to the run ledger (`--ledger`, defaulting beside the run
+directories): a launch line (role, target, model, staged input bytes, timeout) and a complete
+line (exit code, verdict, duration, tokens the CLI actually printed). Approved run counts
+(`approved_run_counts`) and parallel-launch caps (`approved_concurrency`) are intake decisions
+checked before staging: a dispatch beyond an approved count or cap is refused with the count
+named and the required user evidence — never queued. A crashed dispatch's parallel slot is
+reclaimed automatically; failed runs count toward limits; a retry is a new run. Synthetic
+intake fixtures and schema-mapping wrappers that make a checker accept an unconfirmed
+arrangement are contract violations, not implementation choices: if the record cannot
+honestly support a dispatch, obtain the user decision that makes it honest.
 
 Mailbox receipts retain execution `status` and add the same role feedback; updated
 waiting Python and shell clients return 3 for attention. A completed receipt alone
@@ -146,6 +164,35 @@ Continue while evidence progress is possible. Record unresolved source limitatio
 and conflicting claims explicitly. Ask the user for a choice if the treatment would
 change the agreed scope. An unavailable CLI stops this delegated route; changing CLI,
 transport, or validation mode requires a new user choice.
+
+## Recovering work from disk artifacts
+
+Everything a dispatch needs lives in its run directory: `brief.md`, the staged
+input, `prompt.txt`, `dispatch.json`, `stdout.txt`, `stderr.txt`, and
+`result.json` when the contract passed. The ledger and in-flight registry sit
+beside the run directories. When a run dies — coordinator restart, timeout,
+crash — recover from these artifacts, in this order:
+
+1. Derive the run states from the ledger and registry: completed runs keep
+   their verdicts; failed runs keep their retained streams; orphaned runs (a
+   launch without a complete line) are the recovery targets.
+2. For an orphaned run, read the retained `stdout.txt`/`stderr.txt` for
+   partial output. A final role JSON can exist in the stream even when
+   `result.json` is absent; the contract parser can be applied to the
+   retained stream without relaunching the CLI.
+3. For checkpoint exports from a long interactive session, resume from the
+   newest complete export file. Exports are snapshots of another program's
+   state with truncation risk — evidence to review, never a completeness
+   guarantee.
+4. Record recovered material as a new ledger event; never rewrite history.
+   A retry is a new run and consumes budget like any other.
+
+Never read a CLI application's internal store (its conversation database,
+SQLite or protobuf files) to recover work. That is an unusual method requiring
+the user's explicit approval before it runs, with its scope and exclusions
+stated first; read-only mode reduces mutation risk but does not make the
+method routine. Artifact-only recovery is the standard, and the database was
+only ever the fallback when no artifacts existed.
 
 ## Container-originated research
 

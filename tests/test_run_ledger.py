@@ -149,18 +149,18 @@ class RunLedgerTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     run_dispatch(options)
 
-    def test_ledger_write_failure_is_recorded_not_raised(self):
+    def test_unwritable_ledger_location_refuses_dispatch(self):
+        """The in-flight registry lives beside the ledger, so an unwritable
+        ledger location is a fail-closed refusal, not a tolerated write gap."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "blocked").write_text("a file, not a directory", encoding="utf-8")
             options = prepared_options(root, ledger=root / "blocked" / "run_ledger.jsonl")
             fixtures.FakeProcess.output = success_output()
             with patch("research_dispatch.subprocess.Popen", fixtures.FakeProcess):
-                result = run_dispatch(options)
-            self.assertTrue(result.exists())
-            metadata = json.loads((result.parent / "dispatch.json").read_text())
-            self.assertIn("ledger_error", metadata)
-            self.assertEqual(metadata["status"], "completed")
+                with self.assertRaises(OSError):
+                    run_dispatch(options)
+            self.assertFalse((root / "dispatch").exists())
 
 
 class RunCountCheckerTests(unittest.TestCase):

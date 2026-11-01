@@ -4,6 +4,7 @@ Configuration is JSON data, never shell code. See README.md for the contract.
 """
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime
 import hashlib
 import ipaddress
@@ -28,6 +29,25 @@ ROLES = set(DELEGATED_ROLE_NAMES)
 
 LEDGER_DEFAULT_NAME = "run_ledger.jsonl"
 
+# Best-effort usage telemetry: only counters a CLI actually prints in its
+# retained stream, extracted per CLI. Absent telemetry stays null — never
+# converted, estimated, or summed across CLIs (audit lesson: printed counters
+# are not billing data).
+TOKEN_PATTERNS = {
+    "codex": re.compile(r"tokens used[^0-9]{0,20}([0-9][0-9,]*)", re.IGNORECASE),
+}
+
+
+def extract_tokens_reported(cli: str, stdout: str) -> int | None:
+    pattern = TOKEN_PATTERNS.get(cli)
+    if pattern is None or not stdout:
+        return None
+    matches = pattern.findall(stdout)
+    if not matches:
+        return None
+    digits = matches[-1].replace(",", "")
+    return int(digits) if digits.isdigit() else None
+
 
 def now_stamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -40,23 +60,28 @@ def ledger_path_for(args: argparse.Namespace) -> Path:
     return Path(explicit) if explicit is not None else args.run_dir.parent / LEDGER_DEFAULT_NAME
 
 
-def ledger_launches(path: Path, role: str) -> int:
-    """Count prior launch entries for a role. Any unreadable or corrupt
-    record fails closed rather than skipping enforcement."""
-    if not path.exists():
-        return 0
-    count = 0
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+def ledger_entries(ledger: Path):
+    """Yield parsed ledger entries; missing file yields nothing, and any
+    unreadable or corrupt record fails closed rather than being skipped."""
+    if not ledger.exists():
+        return
+    for number, line in enumerate(ledger.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as exc:
             raise ValueError(
-                f"run ledger {path} is corrupt at line {number}; investigate before dispatching") from exc
-        if isinstance(entry, dict) and entry.get("event") == "launch" and entry.get("role") == role:
-            count += 1
-    return count
+                f"run ledger {ledger} is corrupt at line {number}; investigate before dispatching") from exc
+        yield entry
+
+
+def ledger_launches(path: Path, role: str) -> int:
+    """Count prior launch entries for a role. Any unreadable or corrupt
+    record fails closed rather than skipping enforcement."""
+    return sum(1 for entry in ledger_entries(path)
+               if isinstance(entry, dict) and entry.get("event") == "launch"
+               and entry.get("role") == role)
 
 
 def ledger_append(path: Path, entry: dict, metadata: dict | None = None) -> None:
@@ -99,6 +124,179 @@ def enforce_run_limit(record: dict, role: str, ledger: Path) -> None:
             "decision with recorded user evidence")
 
 
+def process_alive(pid) -> bool:
+    """Liveness of a recorded dispatch process. os.kill(pid, 0) is unsafe on
+    Windows (non-signal values terminate the target), so query the process
+    table there instead. A terminated process can stay openable until the
+    kernel reaps it, so its exit code decides: STILL_ACTIVE means alive."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 0x103
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+try:
+    import fcntl
+
+    def _lock_region(handle):
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+    def _unlock_region(handle):
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+except ImportError:  # Windows
+    import msvcrt
+
+    def _lock_region(handle):
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+
+    def _unlock_region(handle):
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def exclusive_lock(path: Path):
+    """Cross-process advisory lock over one byte. The OS releases it if the
+    holder dies, so no stale-lock cleanup is needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+")
+    try:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write("0")
+            handle.flush()
+        _lock_region(handle)
+        try:
+            yield
+        finally:
+            _unlock_region(handle)
+    finally:
+        handle.close()
+
+
+def in_flight_path(ledger: Path) -> Path:
+    return ledger.parent / (ledger.stem + ".in_flight.json")
+
+
+def load_in_flight(registry: Path) -> list[dict]:
+    """Read the live in-flight registry; a corrupt or unreadable registry
+    fails closed exactly like the ledger."""
+    if not registry.exists():
+        return []
+    try:
+        data = json.loads(registry.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"in-flight registry {registry} is unreadable; investigate before dispatching") from exc
+    runs = data.get("runs") if isinstance(data, dict) else None
+    if not isinstance(runs, list):
+        raise ValueError(f"in-flight registry {registry} must contain a runs list")
+    return [entry for entry in runs if isinstance(entry, dict)]
+
+
+def save_in_flight(registry: Path, runs: list[dict]) -> None:
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(json.dumps({"runs": runs}, indent=2), encoding="utf-8")
+
+
+def enforce_concurrency_cap(record: dict, role: str, ledger: Path, run_id: str) -> None:
+    """Atomically check-and-reserve one parallel slot for this dispatch. The
+    cap comes from the approved_concurrency intake table and defaults to 1
+    (serial) when unset — parallelism is never silently enabled. Reservations
+    record the dispatch process's own pid, so a crashed dispatch's slot is
+    reclaimed by the next dispatch's stale-entry cleanup. Refusal — never
+    waiting — keeps the direct route's block-then-ask contract; queueing
+    remains the mailbox route's job."""
+    cap = 1
+    decision = record.get("decisions", {}).get("approved_concurrency")
+    if isinstance(decision, dict) and decision.get("state") == "answered":
+        limits = decision.get("answer")
+        if not isinstance(limits, dict):
+            raise ValueError("approved_concurrency answer must map delegated role names to positive integers")
+        value = limits.get(role)
+        if value is not None:
+            if type(value) is not int or value < 1:
+                raise ValueError("approved_concurrency must map role names to positive integers")
+            cap = value
+    registry = in_flight_path(ledger)
+    with exclusive_lock(registry.with_suffix(registry.suffix + ".lock")):
+        runs = [entry for entry in load_in_flight(registry) if process_alive(entry.get("pid"))]
+        in_flight = sum(1 for entry in runs if entry.get("role") == role)
+        if in_flight >= cap:
+            raise ValueError(
+                f"concurrency cap reached for role {role}: {in_flight} already in flight, "
+                f"the cap is {cap}; a new launch needs a finished run or a raised "
+                "approved_concurrency decision with recorded user evidence")
+        runs.append({"run_id": run_id, "role": role, "pid": os.getpid(), "ts": now_stamp()})
+        save_in_flight(registry, runs)
+
+
+def release_in_flight(ledger: Path, run_id: str, metadata: dict | None = None) -> None:
+    """Free this dispatch's parallel slot. Best-effort: a failed release is
+    recorded in run metadata and the stale-entry cleanup reclaims the slot
+    once the dispatch process is gone."""
+    registry = in_flight_path(ledger)
+    try:
+        with exclusive_lock(registry.with_suffix(registry.suffix + ".lock")):
+            runs = load_in_flight(registry)
+            remaining = [entry for entry in runs if entry.get("run_id") != run_id]
+            if len(remaining) != len(runs):
+                save_in_flight(registry, remaining)
+    except (OSError, ValueError) as exc:
+        if metadata is not None:
+            metadata["in_flight_error"] = str(exc)
+
+
+def run_states(ledger: Path) -> dict:
+    """Derive each recorded run's state from observed events only: the
+    ledger plus the live in-flight registry. launch+complete is completed
+    (verdict recorded) or failed (none); launch alone is running while its
+    dispatch process lives and orphaned once it does not."""
+    reserved = {entry.get("run_id"): entry for entry in load_in_flight(in_flight_path(ledger))}
+    runs: dict[str, dict] = {}
+    for entry in ledger_entries(ledger):
+        if not isinstance(entry, dict) or not entry.get("run_id"):
+            continue
+        record = runs.setdefault(entry["run_id"], {"role": entry.get("role")})
+        if entry.get("event") == "launch":
+            record["state"] = "running"
+        else:
+            record["state"] = "completed" if entry.get("verdict") else "failed"
+            record["verdict"] = entry.get("verdict")
+            record["exit_code"] = entry.get("exit_code")
+    for run_id, record in runs.items():
+        if record["state"] == "running":
+            entry = reserved.get(run_id)
+            if entry is None or not process_alive(entry.get("pid")):
+                record["state"] = "orphaned"
+    states: dict[str, int] = {}
+    for record in runs.values():
+        states[record["state"]] = states.get(record["state"], 0) + 1
+    return {"runs": runs, "states": states}
+
+
 def native_program(executable: str) -> str:
     if (not nonempty_text(executable) or executable != executable.strip()
             or executable.startswith('-') or any(ord(c) < 32 for c in executable)):
@@ -131,7 +329,8 @@ def child_environment(choice: dict) -> dict:
 def result_feedback(path: Path, metadata=None) -> dict:
     result = read_json(path)
     attention = (result['verdict'] in {'blocked', 'gaps_found'} or
-                 (result['role'] == 'gap_fill' and bool(result.get('unresolved'))))
+                 (result['role'] == 'gap_fill' and bool(result.get('unresolved'))) or
+                 (result['role'] == 'research' and bool(result.get('unanswered'))))
     if metadata is None:
         metadata = read_json(path.parent / 'dispatch.json') if (path.parent / 'dispatch.json').exists() else {}
     unchecked = metadata.get('unaccounted_input_ids', [])
@@ -145,6 +344,11 @@ def result_feedback(path: Path, metadata=None) -> dict:
             item['gap_id'] + ' (' + item['reason'] + ')' for item in result['unresolved'])
     if result['role'] == 'gap_fill':
         notice += ' Corrections require fresh AI validation.'
+    if result['role'] == 'research' and result.get('unanswered'):
+        notice += ' Unanswered questions: ' + '; '.join(
+            item['question_id'] + ' (' + item['reason'] + ')' for item in result['unanswered'])
+    if result['role'] == 'research':
+        notice += ' Findings require validation before use.'
     notice = ''.join(c if c.isprintable() else ' ' for c in notice)[:2000]
     return {'role_verdict': result['verdict'], 'requires_attention': attention,
             'unaccounted_input_ids': unchecked, 'user_notice': notice}
@@ -174,19 +378,49 @@ def target_config(config: dict, target: str) -> dict:
     return choice
 
 
-def confirmed_target(record: dict, role: str, target: str, choice: dict) -> None:
-    prefix = "validator" if role == "validate" else "gap_filler"
+def routing_prefix(record: dict, role: str, field: str) -> str:
+    """Which confirmed routing decision governs a dispatch field. Research
+    always uses its own researcher routing. Revalidation defaults to the
+    confirmed validator routing; an answered revalidator_<field> overrides
+    that field, and an answered revalidator_cli makes the transport/model
+    fall back to the overridden CLI's own decisions."""
+    if role == "research":
+        return "researcher"
+    if role != "revalidate":
+        return "validator" if role == "validate" else "gap_filler"
     decisions = record["decisions"]
-    if decisions[f"{prefix}_cli"].get("answer") != target:
-        raise ValueError(f"target differs from confirmed {prefix}_cli")
-    if decisions[f"{prefix}_transport"].get("answer") != choice.get("transport", "direct"):
-        raise ValueError(f"transport differs from confirmed {prefix}_transport")
-    model_decision = decisions[f"{prefix}_model"]
+    specific = decisions.get(f"revalidator_{field}")
+    if isinstance(specific, dict) and specific.get("state") == "answered":
+        return "revalidator"
+    if field == "cli":
+        return "validator"
+    override = decisions.get("revalidator_cli")
+    if isinstance(override, dict) and override.get("state") == "answered":
+        target_name = override.get("answer")
+        for prefix in ("validator", "gap_filler"):
+            if decisions.get(f"{prefix}_cli", {}).get("answer") == target_name:
+                return prefix
+    return "validator"
+
+
+def confirmed_target(record: dict, role: str, target: str, choice: dict) -> None:
+    decisions = record["decisions"]
+    cli_prefix = routing_prefix(record, role, "cli")
+    transport_prefix = routing_prefix(record, role, "transport")
+    model_prefix = routing_prefix(record, role, "model")
+    for name in (f"{cli_prefix}_cli", f"{transport_prefix}_transport", f"{model_prefix}_model"):
+        if name not in decisions:
+            raise ValueError(f"confirmed intake does not record {name}")
+    if decisions[f"{cli_prefix}_cli"].get("answer") != target:
+        raise ValueError(f"target differs from confirmed {cli_prefix}_cli")
+    if decisions[f"{transport_prefix}_transport"].get("answer") != choice.get("transport", "direct"):
+        raise ValueError(f"transport differs from confirmed {transport_prefix}_transport")
+    model_decision = decisions[f"{model_prefix}_model"]
     model = choice.get("model")
     if model and model_decision.get("answer") != model:
-        raise ValueError(f"model differs from confirmed {prefix}_model")
+        raise ValueError(f"model differs from confirmed {model_prefix}_model")
     if not model and model_decision.get("state") == "answered" and model_decision.get("answer") != "default":
-        raise ValueError(f"configured model is missing for {prefix}")
+        raise ValueError(f"configured model is missing for {model_prefix}")
 
 
 def cli_args(choice: dict, prompt: str, stage: Path, container_stage: str | None) -> list[str]:
@@ -461,7 +695,7 @@ def validate_result(role: str, result: dict, expected_ids) -> None:
     expected = set(unique_ids(expected_ids, "expected input IDs"))
     if result.get("role") != role:
         raise ValueError("result role does not match the requested role")
-    if role == "validate":
+    if role in ("validate", "revalidate"):
         if result.get("verdict") not in ("approved", "approved_with_limits", "gaps_found", "blocked"):
             raise ValueError("validation verdict is missing or invalid")
         issues = result.get("issues")
@@ -526,6 +760,49 @@ def validate_result(role: str, result: dict, expected_ids) -> None:
                 raise ValueError("issue severity must be material or nonmaterial")
         if len({issue["id"] for issue in issues}) != len(issues):
             raise ValueError("validation issues contain duplicate IDs")
+    elif role == "research":
+        if result.get("verdict") not in ("completed", "blocked"):
+            raise ValueError("research verdict is missing or invalid")
+        findings = result.get("findings")
+        unanswered = result.get("unanswered")
+        if not isinstance(findings, list) or not isinstance(unanswered, list):
+            raise ValueError("research findings and unanswered must be lists")
+        seen_ids = set()
+        accounted = set()
+        for finding in findings:
+            if not isinstance(finding, dict):
+                raise ValueError("each research finding must be an object")
+            identifier = finding.get("id")
+            if not nonempty_text(identifier) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*\d", identifier):
+                raise ValueError("each research finding needs a stable ID ending in a digit")
+            if identifier in seen_ids:
+                raise ValueError("research findings contain duplicate IDs")
+            seen_ids.add(identifier)
+            question_ids = finding.get("question_ids")
+            if (not isinstance(question_ids, list) or not question_ids
+                    or any(q not in expected for q in question_ids)):
+                raise ValueError("each finding must cite question IDs from the input")
+            if not nonempty_text(finding.get("claim")):
+                raise ValueError("each research finding needs a nonempty claim")
+            if not source_list(finding.get("source_urls")):
+                raise ValueError("each research finding needs a nonempty source-locator list")
+            if not isinstance(finding.get("retrieved"), str) or not re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}", finding["retrieved"]):
+                raise ValueError("each research finding needs a retrieval date as YYYY-MM-DD")
+            if finding.get("source_date") is not None and not nonempty_text(finding.get("source_date")):
+                raise ValueError("research source_date must be a nonempty string when present")
+            accounted.update(question_ids)
+        for item in unanswered:
+            if (not isinstance(item, dict) or not nonempty_text(item.get("question_id"))
+                    or not nonempty_text(item.get("reason"))):
+                raise ValueError("each unanswered item needs a question_id and a reason")
+            if item["question_id"] not in expected:
+                raise ValueError("unanswered question ID is absent from the input")
+            accounted.add(item["question_id"])
+        if len({item["question_id"] for item in unanswered}) != len(unanswered):
+            raise ValueError("unanswered contains duplicate question IDs")
+        if result["verdict"] == "completed" and accounted != expected:
+            raise ValueError(f"completed research is missing input question IDs: {sorted(expected - accounted)}")
     else:
         if result.get("verdict") not in ("completed", "blocked"):
             raise ValueError("gap-fill verdict is missing or invalid")
@@ -584,9 +861,10 @@ def prompt_for(role: str, inline_brief: str | None = None, inline_input: str | N
         payload = json.dumps({'confirmed_brief': inline_brief, 'role_input': inline_input}, ensure_ascii=True)
         payload = payload.replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
         data = '\nDATA_JSON:\n' + payload
-    if role == "validate":
+    if role in ("validate", "revalidate"):
+        role_noun = "validator" if role == "validate" else "revalidator"
         source_instruction = "Check role_input in DATA_JSON below." if inline_brief is not None else "Read findings.md."
-        return common + (f"You are an independent research validator. {source_instruction} Check link access, "
+        return common + (f"You are an independent research {role_noun}. {source_instruction} Check link access, "
                          "claim accuracy, recency, completeness, and source quality. Return keys: "
                          "role='validate', verdict='approved'|'approved_with_limits'|'gaps_found'|'blocked', summary, "
                          "issues=[{id,claim_id,problem,evidence_urls,severity}], checked_claim_ids=[...], "
@@ -605,6 +883,18 @@ def prompt_for(role: str, inline_brief: str | None = None, inline_input: str | N
                          "If any issue remains open, use gaps_found. Never use approved_with_limits for a "
                          "mismatch or a material gap. Do not list claims absent from the role input as checked.") + data
     source_instruction = "Use role_input in DATA_JSON below" if inline_brief is not None else "Read gaps.md"
+    if role == "research":
+        source_instruction = "Use role_input in DATA_JSON below" if inline_brief is not None else "Read questions.md"
+        return common + (
+            f"You are the delegated primary researcher. {source_instruction}, research every question with "
+            "source-reading tools, and do not validate or correct existing findings. Give each finding a "
+            "stable unique ID ending in a digit. Return keys: role='research', verdict='completed'|'blocked', "
+            "summary, findings=[{id, question_ids, claim, source_urls, retrieved, source_date?}], "
+            "unanswered=[{question_id, reason}]. Each finding states the exact claim, the supporting source "
+            "locators, and its retrieval date as YYYY-MM-DD; include source_date when the source states one. "
+            "Every question must be covered by findings or by an unanswered entry explaining why nothing "
+            "documented was found. If research cannot proceed, return verdict='blocked' and explain the "
+            "blocker in summary.") + data
     return common + (f"You are a research gap filler. {source_instruction}, resolve each identified issue "
                      "with evidence, and do not conduct the originating agent's general research. Return keys: "
                      "role='gap_fill', verdict='completed'|'blocked', summary, "
@@ -615,7 +905,10 @@ def prompt_for(role: str, inline_brief: str | None = None, inline_input: str | N
 def run_dispatch(args: argparse.Namespace) -> Path:
     record, brief = checked_files(args.record, args.brief)
     mode = record["decisions"]["validation_mode"].get("answer")
-    if mode != "external_cli":
+    if args.role == "research":
+        if record["decisions"].get("research_mode", {}).get("answer") != "delegated":
+            raise ValueError("research role requires confirmed research_mode 'delegated'")
+    elif mode != "external_cli":
         raise ValueError("confirmed intake did not select external CLI validation")
     if type(args.timeout) is not int or not 1 <= args.timeout <= 3600:
         raise ValueError('timeout must be 1–3600 seconds')
@@ -627,22 +920,34 @@ def run_dispatch(args: argparse.Namespace) -> Path:
     # recorded: run counts must be trustworthy before any dispatch.
     ledger_launches(ledger, args.role)
     enforce_run_limit(record, args.role, ledger)
-    stage = (args.run_dir / "dispatch" / uuid.uuid4().hex).resolve()
-    stage.mkdir(mode=0o700, parents=True, exist_ok=False)
-    (stage / "brief.md").write_bytes(brief)
-    input_name = "findings.md" if args.role == "validate" else "gaps.md"
-    shutil.copyfile(args.input, stage / input_name)
-    record_path = stage / "dispatch.json"
-    started_clock = time.monotonic()
+    run_id = uuid.uuid4().hex
     launched = False
+    tokens_reported = None
+    started_clock = time.monotonic()
     metadata = {"role": args.role, "target": args.target, "cli": choice["cli"],
                 "transport": choice.get("transport", "direct"),
-                "status": "started", "run_id": stage.name,
+                "status": "started", "run_id": run_id,
                 "started_at": datetime.now().astimezone().isoformat(timespec="seconds")}
-    record_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     process = None
     tree = None
+    record_path = None
+    # Atomic parallel-launch reservation: a launch beyond the approved
+    # concurrency is refused before anything is staged, and the reservation
+    # is released on every exit path below.
+    enforce_concurrency_cap(record, args.role, ledger, run_id)
     try:
+        stage = (args.run_dir / "dispatch" / run_id).resolve()
+        stage.mkdir(mode=0o700, parents=True, exist_ok=False)
+        (stage / "brief.md").write_bytes(brief)
+        if args.role == "research":
+            input_name = "questions.md"
+        elif args.role in ("validate", "revalidate"):
+            input_name = "findings.md"
+        else:
+            input_name = "gaps.md"
+        shutil.copyfile(args.input, stage / input_name)
+        record_path = stage / "dispatch.json"
+        record_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         staged_input = read_text(stage / input_name).encode('utf-8')
         explicit_path = getattr(args, "input_ids", None)
         explicit = None
@@ -697,12 +1002,18 @@ def run_dispatch(args: argparse.Namespace) -> Path:
                 raise
         stdout = read_text(stage / 'stdout.txt', errors='replace')
         stderr = read_text(stage / 'stderr.txt', errors='replace')
+        tokens_reported = extract_tokens_reported(choice["cli"], stdout)
         metadata["exit_code"] = process.returncode
         completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         result = parse_result(choice["cli"], completed, stage)
         validate_result(args.role, result, expected)
-        accounted = (set(result["checked_claim_ids"]) if args.role == "validate" else
-                     {item["gap_id"] for key in ("changes", "unresolved") for item in result[key]})
+        if args.role in ("validate", "revalidate"):
+            accounted = set(result["checked_claim_ids"])
+        elif args.role == "research":
+            accounted = ({q for finding in result["findings"] for q in finding["question_ids"]}
+                         | {item["question_id"] for item in result["unanswered"]})
+        else:
+            accounted = {item["gap_id"] for key in ("changes", "unresolved") for item in result[key]}
         metadata["unaccounted_input_ids"] = sorted(set(expected) - accounted)
         (stage / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         metadata["status"] = "completed"
@@ -722,12 +1033,13 @@ def run_dispatch(args: argparse.Namespace) -> Path:
         metadata["elapsed_seconds"] = round(time.monotonic() - started_clock, 3)
         if launched:
             ledger_append(ledger, {
-                "ts": now_stamp(), "run_id": stage.name, "event": "complete",
+                "ts": now_stamp(), "run_id": run_id, "event": "complete",
                 "exit_code": metadata.get("exit_code"), "verdict": metadata.get("role_verdict"),
                 "duration_s": metadata.get("elapsed_seconds"),
-                # A5 adds per-CLI counter extraction; absent telemetry stays null.
-                "tokens_reported": None}, metadata)
-        record_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+                "tokens_reported": tokens_reported}, metadata)
+        if record_path is not None:
+            record_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        release_in_flight(ledger, run_id, metadata)
     return stage / "result.json"
 
 

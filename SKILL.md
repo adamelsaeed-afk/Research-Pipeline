@@ -41,9 +41,12 @@ supporting user message for validation routing and brief confirmation using the
 intake guide's `user_evidence` fields.
 
 Present validation as an explicit intake choice: `same_session` is a separate review
-pass by this agent; `external_cli` uses fresh validator and gap-filler CLI processes.
-Use an earlier explicit choice or permission to choose when it covers this decision.
-Before making claims about installed CLIs, inspect the active environment; report
+pass by this agent; `external_cli` uses fresh validator and gap-filler CLI processes. Record the
+research-mode choice the same way — `coordinator` (this agent researches) or `delegated` (a
+primary-researcher CLI) — and the approved run counts and parallel-launch caps for delegated
+roles. Unset means the originating agent researches and delegation runs serially; nothing is
+enabled silently. Use an earlier explicit choice or permission to choose when it covers this
+decision. Before making claims about installed CLIs, inspect the active environment; report
 unchecked availability as unknown. PATH presence alone does not prove usable delegation.
 
 Show the complete `scratch/research_brief.md` to the user and obtain explicit
@@ -73,7 +76,10 @@ plan. If a prerequisite fails, report it and obtain the user's choice before res
 From the confirmed brief, write `scratch/search_plan.md` with search questions,
 priority sources, and coverage strategy. Obtain the user's separate approval of the
 plan before searching unless they explicitly authorized proceeding without that
-checkpoint. The originating agent then searches, gathers evidence, and
+checkpoint. State the execution method at that checkpoint: existing skill tools
+first; if creating new executable files becomes necessary, say so before
+creating them — the language, the expected count, and why a direct dispatcher
+call does not suffice. Direct dispatcher calls come before wrappers. The originating agent then searches, gathers evidence, and
 writes `scratch/raw_findings.md`. Give each material claim a stable ID, exact claim,
 source URL or document locator, source date where known, and retrieval date. Keep
 search reasoning out of the findings file.
@@ -110,16 +116,33 @@ correct the issue; never silently replace the selected validation route.
   findings file rather than search notes. This is a review discipline, not independent
   execution.
 - **External CLI:** read [delegation.md](references/delegation.md), use the project
-  dispatcher, and run the selected validator and gap filler as fresh external CLI
-  processes. Research stays with this agent. Never silently substitute a native
+  dispatcher, and run the delegated roles as fresh external CLI processes: the validator, the
+  gap filler, a fresh `revalidate` pass after material corrections, and — when the confirmed
+  research mode is `delegated` — the researcher. Bounded one-shot dispatches are the default
+  shape for every role. Research stays with this agent unless the confirmed research mode is
+  `delegated`. Never silently substitute a native
   subagent or another transport if a configured CLI cannot run; report the exact
   prerequisite and wait for the user's choice.
+
+A genuinely long interactive session is the exception to bounded dispatches, permitted only
+with the export rule: the coordinator saves each completed unit of work to the run directory
+as it happens — after each source read or findings chunk, with a timer as backstop — appends a
+ledger line per export, and treats exports as snapshots with truncation risk, never a
+completeness guarantee. In container setups the exports go to the host-mounted shared
+directory, because anything left inside the container is destroyed at teardown. A new
+executable file, an unusual recovery method, or a model substitution is disclosed at the
+checkpoint where it appears; never present one silently. When a staleness or mismatch warning
+surfaces, its resolution is the user's fresh routing choice — keep the recorded value, adopt
+what the runs used, or choose differently — recorded with their message as evidence. If a run
+is in flight under the previous routing when that choice is made, surface it as a checkpoint
+question — let it finish or stop it — and never stop it automatically.
 
 The AI validator records supported claims and specific gaps. The gap filler addresses
 those gaps with cited corrections. After each material correction, the AI validator
 repeats the source checks on the corrected findings and any affected derived counts,
-using the same evidence standard as the first validation. In external CLI mode, start
-a fresh validator process; in same-session mode, perform a separate AI review pass.
+using the same evidence standard as the first validation. In external CLI mode, start a fresh
+`revalidate` dispatch — by default a fresh session of the confirmed validator; in same-session
+mode, perform a separate AI review pass.
 The gap filler's completion is not validation approval. Continue while a pass adds
 material evidence. When an issue stalls because evidence is inaccessible or
 contradictory, record the precise
@@ -172,3 +195,13 @@ needs it; do not delete evidence automatically.
 
 For later refinements, reopen only affected research questions, confirm any changed
 brief decisions, validate changed findings, and revise the report accordingly.
+
+## Answering user concerns
+
+A multi-part question gets every part answered, explicitly and in order — never one part.
+Lead with the part the user emphasized: repeated punctuation or an "important question"
+marks the actual concern. If the literal question and the evident concern differ, say
+both — for example: "I have not modified the skill's files, and I have created 14 new
+helper files; here is why." A literally true answer that dodges the concern is a failed
+answer. Any commitment ("no new files") also states what will still happen — existing
+files will be edited, code will run — so its scope is unambiguous.

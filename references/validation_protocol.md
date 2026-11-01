@@ -43,8 +43,9 @@ The gap filler handles the identified gaps, returning corrected findings, replac
 sources, and unresolved items by gap ID. The originating agent incorporates only
 evidence-backed corrections into `raw_findings.md`. The AI validator opens the
 relevant sources and checks those changes and any affected derived counts against
-the same evidence standard used in the initial validation. Use a fresh validator
-process in external CLI mode or a separate AI review pass in same-session mode.
+the same evidence standard used in the initial validation. Use a fresh `revalidate`
+dispatch in external CLI mode — by default a fresh session of the confirmed
+validator — or a separate AI review pass in same-session mode.
 A gap fill is not its own approval.
 
 Repeat while new material evidence appears or a finding is corrected. If a source

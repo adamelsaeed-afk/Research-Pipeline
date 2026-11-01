@@ -10,7 +10,10 @@ without meaningful ambiguity.
 
 Always resolve research type, exact questions, targets or inclusion criteria,
 geography, time and evidence period, depth, report format, known source leads (including
-an explicit “none”), review granularity, and validation mode. Market research also
+an explicit “none”), review granularity, validation mode, and the research mode
+(`coordinator` — the default, this agent researches; or `delegated` — a primary-researcher
+CLI, which also records the researcher's CLI target, transport, and model). Market research
+also
 needs its subtype. Follow relevant branches:
 
 - Comparisons: population, categories, inclusion and exclusion rules, comparison
@@ -27,8 +30,15 @@ needs its subtype. Follow relevant branches:
 - Technical research: target versions, deployment environment, performance or
   compatibility criteria, and any required evaluation conditions.
 - External CLI validation: target CLI for validation, target CLI for gap filling,
-  configured transport, and OpenCode provider/model when selected. These are
+  configured transport, and OpenCode provider/model when selected. Delegated research adds
+  the researcher's CLI target, transport, and model. These are
   operational choices; they never appear in the management report.
+- Run budget: the approved run count per delegated role (`approved_run_counts`), the
+  parallel-launch cap per role (`approved_concurrency` — unset means serial), and whether
+  usage is hard-capped or reported cumulatively at every checkpoint. Ask the user
+  explicitly whether research dispatches run in parallel and how many at once, and state
+  the expected run count before exceeding an approved one; record both decisions with
+  `user_evidence`.
 
 ## Derive task-specific branches
 
